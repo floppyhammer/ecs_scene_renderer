@@ -41,46 +41,67 @@ void create_glyphs(World& world) {
     for (auto [entity, text, font, material_handle, transform, visibility] : query.each()) {
         Vec3F text_size;
 
-        std::vector<C_AssetHandle<Mesh<Vertex>>> handles;
+        struct GlyphEntry {
+            std::optional<C_AssetHandle<Mesh<Vertex>>> handle;
+            float width = 0.0f;
+        };
+
+        std::vector<GlyphEntry> entries;
 
         std::u16string text_u16;
         from_utf8(text.content, text_u16);
 
         for (auto& c : text_u16) {
-            auto iter = text.glyph_cache.find(c);
-            if (iter != text.glyph_cache.end()) {
-                handles.push_back(iter->second);
-            } else {
-                auto mesh = font.get_data()->generate_mesh(c, text.depth).value();
-                auto mesh_handle = assets->add(mesh);
-                text.glyph_cache[c] = mesh_handle;
-                handles.push_back(mesh_handle);
-
-                unwrap_uv(mesh);
+            if (c == u' ') {
+                float space_width = 0.5f;
+                entries.push_back({std::nullopt, space_width});
+                text_size.x += space_width;
+                continue;
             }
 
-            auto v = (handles.back().get_data()->aabb->second - handles.back().get_data()->aabb->first);
-            text_size.x += v.x;
-            text_size.y = v.y;
-            text_size.z = v.z;
+            auto iter = text.glyph_cache.find(c);
+            if (iter != text.glyph_cache.end()) {
+                auto& handle = iter->second;
+                auto v = handle.get_data()->aabb->second - handle.get_data()->aabb->first;
+                entries.push_back({handle, v.x});
+                text_size.x += v.x;
+                text_size.y = std::max(text_size.y, v.y);
+                text_size.z = std::max(text_size.z, v.z);
+            } else {
+                auto mesh_opt = font.get_data()->generate_mesh(c, text.depth);
+                if (!mesh_opt.has_value()) {
+                    continue;
+                }
+                auto mesh = mesh_opt.value();
+                auto mesh_handle = assets->add(mesh);
+                text.glyph_cache[c] = mesh_handle;
+
+                unwrap_uv(mesh);
+
+                auto v = mesh->aabb->second - mesh->aabb->first;
+                entries.push_back({mesh_handle, v.x});
+                text_size.x += v.x;
+                text_size.y = std::max(text_size.y, v.y);
+                text_size.z = std::max(text_size.z, v.z);
+            }
         }
 
         C_Transform glyph_transform;
         glyph_transform.translation.x = -text_size.x / 2;
 
-        for (auto& handle : handles) {
-            auto glyph_mesh_entity = world.spawn();
-            world.add_component(glyph_mesh_entity, C_Text3dGlyph());
-            world.add_component(glyph_mesh_entity, handle);
-            world.add_component(glyph_mesh_entity, material_handle);
-            world.add_component(glyph_mesh_entity, glyph_transform);
-            world.add_component(glyph_mesh_entity, C_GlobalTransform());
-            world.add_component(glyph_mesh_entity, visibility);
+        for (auto& entry : entries) {
+            if (entry.handle.has_value()) {
+                auto glyph_mesh_entity = world.spawn();
+                world.add_component(glyph_mesh_entity, C_Text3dGlyph());
+                world.add_component(glyph_mesh_entity, entry.handle.value());
+                world.add_component(glyph_mesh_entity, material_handle);
+                world.add_component(glyph_mesh_entity, glyph_transform);
+                world.add_component(glyph_mesh_entity, C_GlobalTransform());
+                world.add_component(glyph_mesh_entity, visibility);
 
-            push_child(world, entity, glyph_mesh_entity);
-
-            Vec3 glyph_size = handle.get_data()->aabb->second - handle.get_data()->aabb->first;
-            glyph_transform.translation.x += glyph_size.x;
+                push_child(world, entity, glyph_mesh_entity);
+            }
+            glyph_transform.translation.x += entry.width;
         }
     }
 }
